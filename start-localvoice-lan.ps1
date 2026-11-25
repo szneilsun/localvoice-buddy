@@ -35,9 +35,14 @@ if (-not $acl.AreAccessRulesProtected) {
 }
 
 if ((Test-Path -LiteralPath $configPath) -and -not $ReissueCertificate) {
-    $current = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $current = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json -AsHashtable
     if ($current.lanIp -ne $LanIp -or $current.clientNetwork -ne $ClientNetwork -or $current.port -ne $Port) {
         throw 'Existing certificate is for a different address. Stop the gateway, reissue it, and trust the new certificate on the Mac.'
+    }
+    if ($current.Contains('username') -or $current.Contains('password')) {
+        [void]$current.Remove('username')
+        [void]$current.Remove('password')
+        [IO.File]::WriteAllText($configPath, ($current | ConvertTo-Json))
     }
 } else {
     $rootKey = [Security.Cryptography.RSA]::Create(2048)
@@ -101,14 +106,11 @@ if ((Test-Path -LiteralPath $configPath) -and -not $ReissueCertificate) {
         $rootKey.Dispose()
     }
 
-    $password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)).ToLowerInvariant()
     $config = @{
         lanIp = $LanIp
         port = $Port
         clientNetwork = $ClientNetwork
         backendPort = 8010
-        username = 'voice'
-        password = $password
     }
     [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json))
 }
@@ -119,5 +121,5 @@ $certificate = Join-Path $directory 'localvoice-ca.cer'
 [pscustomobject]@{
     Certificate = $certificate
     SHA256 = (Get-FileHash -LiteralPath $certificate -Algorithm SHA256).Hash
-    LoginFile = $configPath
+    ConfigFile = $configPath
 }

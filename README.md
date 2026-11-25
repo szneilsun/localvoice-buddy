@@ -5,7 +5,7 @@
 - **回复模型：** 默认使用本地 llama.cpp；也可切换到远程 OpenAI 兼容 API。
 - **实时模式：** Piper 中文音色，CPU 合成。
 - **高音质模式：** Qwen3-TTS + NVIDIA CUDA Graph，流式播报。
-- **局域网：** Windows 运行推理，Mac 只需要浏览器和麦克风。使用带密码的 HTTPS 网关，不暴露模型端口。
+- **局域网：** Windows 运行推理，同一受信局域网的 Mac 可直接访问 HTTPS，无需登录，不暴露模型端口。
 
 ```text
 Browser → voice_web.py → Qwen3-ASR (CPU)
@@ -37,7 +37,7 @@ Browser → voice_web.py → Qwen3-ASR (CPU)
 
 点击「新对话」旁的设置图标，选择「远程 OpenAI 兼容」，填写 HTTPS API Base URL（例如 `https://api.openai.com/v1`）、API Key 和提供商给出的模型名称（例如 `gpt-4o-mini`）。设置中保留 Base URL，发送请求时自动追加 `/chat/completions`；旧的完整地址仍可使用。服务需要支持流式 Chat Completions。保存后点「样音测试」验证；「远程已配置」只表示设置已保存。
 
-远程模式不需要启动 llama.cpp。语音识别和合成仍在 Windows 主机上运行，只有转写文本和当前对话的历史问答会发给所选服务。设置由该服务实例的浏览器客户端共享，API Key 保存在 Windows 主机的 `runtime/chat-settings.json`（本地明文，不进入 Git，不会返回给网页）。切回「本地」会保留远程设置，也可以同时勾选「清除远程配置」。更换 URL 时需重新填写 API Key。
+远程模式不需要启动 llama.cpp。语音识别和合成仍在 Windows 主机上运行，只有转写文本和当前对话的历史问答会发给所选服务。回复模型只能在 Windows 本机网页设置，局域网客户端使用主机选定的模型。API Key 保存在 Windows 主机的 `runtime/chat-settings.json`（本地明文，不进入 Git，不会返回给网页）。切回「本地」会保留远程设置，也可以同时勾选「清除远程配置」。更换 URL 时需重新填写 API Key。
 
 ## Windows 部署
 

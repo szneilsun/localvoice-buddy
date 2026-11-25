@@ -24,14 +24,14 @@ async function main() {
     ],
   });
   try {
-    const context = await browser.newContext({
-      httpCredentials: {username: config.username, password: config.password, origin: url},
-    });
+    const context = await browser.newContext();
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const response = await page.goto(url);
     assert.equal(response.status(), 200);
+    assert.equal(response.headers()["www-authenticate"], undefined);
+    assert.equal(await page.locator("#chat-settings").isHidden(), true);
     assert.equal(await page.evaluate(() => isSecureContext && !!navigator.mediaDevices?.getUserMedia), true);
     await page.locator("#tts-quality + span").click();
     const upload = page.waitForResponse((response) =>

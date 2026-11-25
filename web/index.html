@@ -137,7 +137,7 @@
           <ol>
             <li>让 Mac 和 Windows 连到同一局域网，保持 Windows 和语音服务运行。</li>
             <li>首次使用时，从 Windows 页面下载局域网公用 CA 证书，传到 Mac，在「钥匙串访问」中信任其 SSL 证书。<a id="lan-certificate" href="/localvoice-ca.cer" download hidden>下载局域网公用证书</a></li>
-            <li>在 Mac 打开上方 HTTPS 地址，用用户名 <code>voice</code> 和 Windows 的 <code>.voice-lan/access.json</code> 中的 <code>password</code> 登录，然后允许浏览器使用麦克风。</li>
+            <li>在同一局域网的 Mac 打开上方 HTTPS 地址，无需登录。允许浏览器使用麦克风后即可对话；回复模型在 Windows 本机设置。</li>
           </ol>
           <p>连不上时，确认 Windows 防火墙允许专用网络访问 HTTPS 端口（默认 <code>8443</code>），不要在路由器上转发端口。</p>
         </section>

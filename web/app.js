@@ -1009,6 +1009,7 @@ function interrupt(moveFocus = true) {
 }
 
 $("interrupt").onclick = () => interrupt();
+$("chat-settings").hidden = location.protocol === "https:";
 $("chat-settings").onclick = openChatSettings;
 $("access-guide").ontoggle = showAccessGuide;
 $("chat-local").onchange = $("chat-remote").onchange = showChatFields;

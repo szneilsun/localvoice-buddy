@@ -10,7 +10,7 @@ const origin = "http://127.0.0.1:8000";
 const first = "a".repeat(32);
 const second = "b".repeat(32);
 
-function harness() {
+function harness(address = origin) {
   const nodes = new Map();
   const events = {};
   const requests = [];
@@ -37,7 +37,7 @@ function harness() {
   class Element {}
   const context = vm.createContext({
     document, Element, URL, Headers, AbortSignal, AbortController, setTimeout, performance,
-    ResizeObserver: class { observe() {} }, setInterval() {}, location: {href: origin},
+    ResizeObserver: class { observe() {} }, setInterval() {}, location: new URL(address),
     sessionStorage: {getItem: () => "c".repeat(32), setItem() {}},
     window: {MediaRecorder: true, addEventListener: (name, callback) => { events[name] = callback; }},
     navigator: {mediaDevices: {getUserMedia: () => new Promise(() => {}), addEventListener() {}}},
@@ -88,6 +88,7 @@ test("the connection guide shows the advertised LAN address and public certifica
 test("the reply model dialog saves remotely without retaining the key in the form", async () => {
   const page = harness();
   await openPage(page, {llama: false, chat_provider: "local"});
+  assert.equal(page.el("chat-settings").hidden, false);
   const opening = page.el("chat-settings").onclick();
   (await page.next("/api/chat-settings")).reply({provider: "local", url: "", model: "", has_api_key: false});
   await opening;
@@ -119,6 +120,14 @@ test("the reply model dialog saves remotely without retaining the key in the for
   assert.equal(page.el("chat-key").required, false);
   assert.equal(page.el("chat-key").value, "");
   page.el("chat-close").onclick();
+  page.el("sample").onclick();
+  assert.equal((await page.next("/api/sample")).init.headers.get("X-Voice-Chat-Provider"), "remote");
+});
+
+test("LAN users can start a sample with the host's reply model but cannot open its settings", async () => {
+  const page = harness("https://192.168.1.20:8443/");
+  await openPage(page, {llama: false, chat_provider: "remote"});
+  assert.equal(page.el("chat-settings").hidden, true);
   page.el("sample").onclick();
   assert.equal((await page.next("/api/sample")).init.headers.get("X-Voice-Chat-Provider"), "remote");
 });

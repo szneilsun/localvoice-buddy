@@ -1,6 +1,4 @@
 import argparse
-import base64
-import hmac
 import http.client
 import ipaddress
 import json
@@ -20,7 +18,7 @@ RESPONSE_HEADERS = (
     "Content-Type", "Cache-Control", "X-Content-Type-Options", "Permissions-Policy",
     "Cross-Origin-Resource-Policy", "Content-Security-Policy",
 )
-AUTH_REALM = 'Basic realm="LocalVoice"'
+GATEWAY_HEALTH = {"service": "voice-buddy-lan"}
 
 
 def gateway_address(config):
@@ -52,12 +50,12 @@ def gateway_ready(config, directory):
         trust = ssl.create_default_context(cafile=str(directory / "localvoice-ca.pem"))
         connection = http.client.HTTPSConnection(address, port, timeout=1, context=trust)
         try:
-            connection.request("GET", "/api/status")
+            connection.request("GET", "/api/health")
             with connection.getresponse() as response:
-                return response.status == 401 and response.getheader("WWW-Authenticate") == AUTH_REALM
+                return response.status == 200 and json.loads(response.read(256)) == GATEWAY_HEALTH
         finally:
             connection.close()
-    except (OSError, http.client.HTTPException):
+    except (OSError, ValueError, http.client.HTTPException):
         return False
 
 
@@ -69,10 +67,6 @@ class Gateway(ThreadingHTTPServer):
         self.backend_port = int(config["backendPort"])
         self.host = f"{listen}:{port}"
         self.origin = f"https://{self.host}"
-        password = config["password"]
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{32,}", password):
-            raise ValueError("A generated gateway password is required.")
-        self.credential = "Basic " + base64.b64encode(f"voice:{password}".encode()).decode("ascii")
         self.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.tls.minimum_version = ssl.TLSVersion.TLSv1_2
         self.tls.load_cert_chain(directory / "server.pem", directory / "server-key.pem")
@@ -105,16 +99,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.close_connection = True
 
-    def reject(self, status, message, challenge=False):
-        body = json.dumps({"error": message}).encode("utf-8")
+    def send_json(self, status, data):
+        body = json.dumps(data).encode("utf-8")
         self.begin(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        if challenge:
-            self.send_header("WWW-Authenticate", AUTH_REALM)
         self.end_headers()
         self.wfile.write(body)
+
+    def reject(self, status, message):
+        self.send_json(status, {"error": message})
 
     def do_GET(self):
         self.forward()
@@ -129,14 +124,15 @@ class Handler(BaseHTTPRequestHandler):
                 or origin not in (None, self.server.origin)
                 or (self.command == "POST" and origin != self.server.origin)):
             return self.reject(403, "Use the same-origin HTTPS address for LocalVoice.")
-        supplied = self.headers.get("Authorization", "").encode("latin-1")
-        if not hmac.compare_digest(supplied, self.server.credential.encode("ascii")):
-            return self.reject(401, "LocalVoice login required.", challenge=True)
         path = urlsplit(self.path)
         if not self.path.startswith("/") or self.path.startswith("//") or path.scheme or path.netloc:
             return self.reject(400, "Invalid local path.")
         if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) > 1:
             return self.reject(400, "Unsupported message framing.")
+        if path.path == "/api/chat-settings":
+            return self.reject(403, "Manage reply model settings on the Windows host.")
+        if self.command == "GET" and path.path == "/api/health":
+            return self.send_json(200, GATEWAY_HEALTH)
         headers = {key: self.headers[key] for key in REQUEST_HEADERS if key in self.headers}
         body = None
         if self.command == "POST":
@@ -183,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Authenticated HTTPS entry point for LocalVoice.")
+    parser = argparse.ArgumentParser(description="LAN HTTPS entry point for LocalVoice.")
     parser.add_argument("config", type=Path)
     parser.add_argument("--detach", action="store_true")
     args = parser.parse_args()
