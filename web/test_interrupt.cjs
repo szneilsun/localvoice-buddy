@@ -24,6 +24,8 @@ function harness() {
         paused: true, hidden: true, ended: false, value: "",
         setAttribute() {}, removeAttribute() { this.src = ""; },
         getContext: () => null, querySelectorAll: () => [], replaceChildren() {},
+        showModal() { this.open = true; },
+        close() { this.open = false; this.onclose?.(); },
         focus() { document.activeElement = this; },
         load() {}, pause() { this.paused = true; },
         play() { this.paused = false; plays++; return Promise.resolve(); },
@@ -66,6 +68,60 @@ async function openPage(page, status = {llama: true}) {
   await new Promise(setImmediate);
   assert.equal(page.mode(), "idle");
 }
+
+test("the connection guide shows the advertised LAN address and public certificate", async () => {
+  const page = harness();
+  await openPage(page);
+  page.el("access-guide").open = true;
+  const update = page.el("access-guide").ontoggle();
+  (await page.next("/api/access")).reply({
+    local_url: "http://127.0.0.1:8010/", model_port: 8001,
+    lan: {url: "https://192.168.1.20:8443/", ready: true, certificate: true},
+  });
+  await update;
+  assert.equal(page.el("local-url").textContent, "http://127.0.0.1:8010/");
+  assert.equal(page.el("lan-url").href, "https://192.168.1.20:8443/");
+  assert.equal(page.el("lan-status").textContent.trim(), "· HTTPS 已启动");
+  assert.equal(page.el("lan-certificate").hidden, false);
+});
+
+test("the reply model dialog saves remotely without retaining the key in the form", async () => {
+  const page = harness();
+  await openPage(page, {llama: false, chat_provider: "local"});
+  const opening = page.el("chat-settings").onclick();
+  (await page.next("/api/chat-settings")).reply({provider: "local", url: "", model: "", has_api_key: false});
+  await opening;
+  assert.equal(page.el("chat-remote-fields").hidden, true);
+  page.el("chat-remote").checked = true;
+  page.el("chat-remote").onchange();
+  assert.equal(page.el("chat-remote-fields").hidden, false);
+  assert.equal(page.el("chat-key").required, true);
+  page.el("chat-url").value = "https://chat.example.test/v1";
+  page.el("chat-model").value = "chat";
+  page.el("chat-key").value = "dummy-key";
+
+  const saving = page.el("chat-form").onsubmit({preventDefault() {}});
+  const save = await page.next("/api/chat-settings");
+  assert.deepEqual(JSON.parse(save.init.body), {
+    provider: "remote", url: "https://chat.example.test/v1", model: "chat", api_key: "dummy-key",
+  });
+  const saved = {provider: "remote", url: "https://chat.example.test/v1", model: "chat", has_api_key: true};
+  save.reply(saved);
+  await saving;
+  assert.equal(page.el("chat-dialog").open, false);
+  assert.equal(page.el("processing-location").textContent, "文本发往远程");
+  assert.equal(page.el("chat-key").value, "");
+
+  (await page.next("/api/status")).reply({llama: false, chat_provider: "remote"});
+  const reopening = page.el("chat-settings").onclick();
+  (await page.next("/api/chat-settings")).reply(saved);
+  await reopening;
+  assert.equal(page.el("chat-key").required, false);
+  assert.equal(page.el("chat-key").value, "");
+  page.el("chat-close").onclick();
+  page.el("sample").onclick();
+  assert.equal((await page.next("/api/sample")).init.headers.get("X-Voice-Chat-Provider"), "remote");
+});
 
 test("the fast voice is selected by default and the quality choice is sent with a turn", async () => {
   const page = harness();

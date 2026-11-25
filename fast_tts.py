@@ -1,12 +1,12 @@
 import json
 import wave
 
-from run_voice_turn import ROOT
+from voice_smoke import ASSET_ROOT
 
 
-MODEL = ROOT / "models/piper-zh-cn-huayan/zh_CN-huayan-medium.onnx"
+MODEL = ASSET_ROOT / "models/piper-zh-cn-huayan/zh_CN-huayan-medium.onnx"
 CONFIG = MODEL.with_suffix(".onnx.json")
-PYTHON = ROOT / ".venv-fasttts/Scripts/python.exe"
+PYTHON = ASSET_ROOT / ".venv-fasttts/Scripts/python.exe"
 
 
 def available():

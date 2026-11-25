@@ -2,8 +2,9 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import MagicMock
 
-from voice_stream import LlamaStream, Sentences, deltas
+from voice_stream import CompletionStream, CompletionTimeout, LlamaStream, Sentences, deltas
 
 
 class StreamTest(unittest.TestCase):
@@ -23,6 +24,15 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(list(deltas(lines + [b"data: [DONE]\n", b"\n"])), ["hi"])
         with self.assertRaises(EOFError):
             list(deltas(lines))
+
+    def test_remote_eof_requires_an_explicit_finish_reason(self):
+        lines = [b'data: {"choices":[{"delta":{"content":"hi"}}]}\n', b"\n"]
+        finished = lines + [b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n', b"\n"]
+        self.assertEqual(list(deltas(finished, allow_finished_eof=True)), ["hi"])
+        with self.assertRaises(EOFError):
+            list(deltas(lines, allow_finished_eof=True))
+        with self.assertRaises(EOFError):
+            list(deltas(finished))
 
     def test_cancellation_closes_a_stalled_http_response(self):
         heard_text = threading.Event()
@@ -77,6 +87,25 @@ class StreamTest(unittest.TestCase):
                 reader.join(5)
                 server.shutdown()
                 worker.join()
+
+    def test_remote_timeout_identifies_the_phase(self):
+        for phase in ("connect", "response", "stream"):
+            with self.subTest(phase=phase):
+                conn = MagicMock()
+                response = conn.getresponse.return_value.__enter__.return_value
+                response.status = 200
+                response.headers.get_content_type.return_value = "text/event-stream"
+                failing = {
+                    "connect": conn.connect,
+                    "response": conn.getresponse,
+                    "stream": response.__iter__,
+                }[phase]
+                failing.side_effect = TimeoutError
+                stream = CompletionStream()
+                with self.assertRaises(CompletionTimeout) as raised:
+                    list(stream.request(conn, "/v1/chat/completions", {}, lambda: None, api_key="test-key"))
+                self.assertEqual(raised.exception.phase, phase)
+                conn.close.assert_called_once()
 
 
 if __name__ == "__main__":

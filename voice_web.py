@@ -20,17 +20,26 @@ from urllib.parse import parse_qs, urlsplit
 
 from fast_tts import available as fast_tts_available
 from run_voice_turn import ROOT, run_step
-from voice_smoke import LOCAL_HTTP
-from voice_stream import LlamaStream, Sentences
+from voice_chat_settings import ChatSettings
+from voice_lan import gateway_address, gateway_ready, load_lan_config
+from voice_smoke import ASSET_ROOT, LOCAL_HTTP
+from voice_stream import (
+    CompletionHTTPError, CompletionStream, CompletionTimeout, LlamaStream, OpenAIStream, Sentences,
+)
 from warm_models import DEFAULT_SPEAKER, ModelMemoryError, WarmModel, gpu_free_mib
 
 
 WEB = ROOT / "web"
 CHECKS = ROOT / "checks"
+LAN = ROOT / ".voice-lan"
+WEB_PORT = 8010
+LOCAL_MODEL_PORT = 8001
+SAMPLE_NAME = "shanghai-question.wav"
 ROOM_LIMIT = 16
 TURN_LIMIT = 12
 ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 MAX_UPLOAD = 2 * 1024 * 1024
+MAX_CHAT_SETTINGS = 16 * 1024
 PCM_RATE = 24000
 WAV_HEADER_BYTES = 44  # The wave writer emits a standard PCM RIFF header.
 VOICE_PRESETS = {
@@ -65,7 +74,7 @@ STAGE_ERRORS = {
 
 def llama_ready():
     try:
-        with LOCAL_HTTP.open("http://127.0.0.1:8001/health", timeout=2) as response:
+        with LOCAL_HTTP.open(f"http://127.0.0.1:{LOCAL_MODEL_PORT}/health", timeout=2) as response:
             return json.load(response)["status"] == "ok"
     except (OSError, ValueError, KeyError):
         return False
@@ -107,6 +116,28 @@ class ChatFailed(RuntimeError):
     pass
 
 
+def remote_chat_error(cause):
+    if isinstance(cause, CompletionHTTPError):
+        if cause.status in (401, 403) and cause.content_type == "text/html":
+            return f"远程网关拒绝访问（HTTP {cause.status}）。请检查 API URL 和网关的网络访问权限。"
+        if cause.status in (401, 403):
+            return "远程模型鉴权失败，请检查 API Key 和模型权限。"
+        if cause.status in (400, 404):
+            return "远程模型拒绝请求，请检查 API URL 和模型名称。"
+        if cause.status == 429:
+            return "远程模型请求受限，请检查 API 用量或稍后重试。"
+        return f"远程模型请求失败（HTTP {cause.status}）。"
+    if isinstance(cause, CompletionTimeout):
+        return {
+            "connect": "连接远程网关超时，请检查网络及 VPN 连接。",
+            "response": "远程网关未及时返回响应，请稍后重试或换用更快的模型。",
+            "stream": "远程回复流中断：等待下一段回复超时。",
+        }[cause.phase]
+    if isinstance(cause, TimeoutError):
+        return "远程模型连接或回复超时，请稍后重试。"
+    return "远程模型回复失败，请检查网络和 API 设置。"
+
+
 @dataclass(slots=True)
 class VoiceTurn:
     room: dict
@@ -114,7 +145,7 @@ class VoiceTurn:
     audio: Path
     started: float = field(default_factory=time.monotonic)
     cancelled: threading.Event = field(default_factory=threading.Event)
-    stream: LlamaStream = field(default_factory=LlamaStream)
+    stream: CompletionStream = field(default_factory=LlamaStream)
 
     def check(self):
         if self.cancelled.is_set():
@@ -133,8 +164,13 @@ class VoiceServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
-    def __init__(self, address, asr=None, tts=None, fast_tts=None, graph=None, asr_device="cuda"):
+    def __init__(self, address, asr=None, tts=None, fast_tts=None, graph=None, asr_device="cuda",
+                 *, chat_settings_path=None, sample_audio=None):
+        self.chat_settings_path = chat_settings_path
+        self.chat_settings = ChatSettings.load(chat_settings_path) if chat_settings_path else ChatSettings()
+        self.chat_settings_lock = threading.Lock()
         super().__init__(address, Handler)
+        self.sample_audio = sample_audio if sample_audio is not None else CHECKS / SAMPLE_NAME
         self.lock = threading.Lock()
         self.audio_changed = threading.Condition(self.lock)
         self.rooms = OrderedDict()
@@ -149,6 +185,14 @@ class VoiceServer(ThreadingHTTPServer):
         self.graph_warming = False
         self.tts_modes = ("fast", "quality") if fast_tts else ("quality",)
 
+    def update_chat_settings(self, data):
+        with self.chat_settings_lock:
+            settings = self.chat_settings.update(data)
+            if self.chat_settings_path:
+                settings.save(self.chat_settings_path)
+            self.chat_settings = settings
+            return settings
+
     def warm_fast_tts(self):
         try:
             self.fast_tts.call(warmup=True)
@@ -157,7 +201,7 @@ class VoiceServer(ThreadingHTTPServer):
 
     def warm_asr(self):
         try:
-            self.asr.call(audio=str(CHECKS / "shanghai-question.wav"), reserve_mib=0)
+            self.asr.call(audio=str(self.sample_audio), reserve_mib=0)
             print("CPU ASR ready.", flush=True)
         except Exception as error:
             print(f"CPU ASR prewarm failed: {error}", flush=True)
@@ -199,7 +243,7 @@ class VoiceServer(ThreadingHTTPServer):
                 return
         if self.asr is None:
             turn.check()
-            run_step(ROOT / ".venv-asr/Scripts/python.exe", "asr",
+            run_step(ASSET_ROOT / ".venv-asr/Scripts/python.exe", "asr",
                      "--input", audio, "--output", transcript, "--device", self.asr_device)
             return
         if self.tts and self.tts.running:
@@ -225,7 +269,7 @@ class VoiceServer(ThreadingHTTPServer):
             return
         speaker = turn.job["speaker"]
         if self.tts is None:
-            run_step(ROOT / ".venv-tts/Scripts/python.exe", "tts",
+            run_step(ASSET_ROOT / ".venv-tts/Scripts/python.exe", "tts",
                      f"--text={text}", "--output", part, "--device", "cuda", "--speaker", speaker)
             return
         options = {"text": text, "speaker": speaker, "output": str(part)}
@@ -389,7 +433,8 @@ class VoiceServer(ThreadingHTTPServer):
             turn.stream.stop()
             producer.join()
 
-    def create_turn(self, conversation, data=None, tts_mode=None, *, speaker=DEFAULT_SPEAKER, preview=False):
+    def create_turn(self, conversation, data, tts_mode=None, *, speaker=DEFAULT_SPEAKER,
+                    preview=False, remote=None):
         with self.lock:
             queued = self.running is not None
             if queued:
@@ -401,10 +446,7 @@ class VoiceServer(ThreadingHTTPServer):
             run.mkdir(parents=True)
             audio = run / "input.wav"
             if not preview:
-                if data is None:
-                    shutil.copyfile(CHECKS / "shanghai-question.wav", audio)
-                else:
-                    audio.write_bytes(data)
+                audio.write_bytes(data)
             rooms = self.previews if preview else self.rooms
             room = rooms.setdefault(conversation, {"turns": [], "latest": None})
             rooms.move_to_end(conversation)
@@ -421,6 +463,8 @@ class VoiceServer(ThreadingHTTPServer):
                 job.update(pcm=True, pcm_bytes=0, tts_backend="qwen-graph")
             room["latest"] = job
             turn = VoiceTurn(room, job, audio)
+            if remote:
+                turn.stream = OpenAIStream(remote)
             if queued:
                 self.waiting = turn
             else:
@@ -476,8 +520,12 @@ class VoiceServer(ThreadingHTTPServer):
             with self.lock:
                 if not turn.cancelled.is_set():
                     failed_stage = "chat" if isinstance(error, ChatFailed) else stage
-                    job.update(error=STAGE_ERRORS[failed_stage], phase="error", parts=0)
-                    traceback.print_exc()
+                    if failed_stage == "chat" and isinstance(turn.stream, OpenAIStream):
+                        message = remote_chat_error(error.__cause__)
+                    else:
+                        message = STAGE_ERRORS[failed_stage]
+                        traceback.print_exc()
+                    job.update(error=message, phase="error", parts=0)
         finally:
             with self.audio_changed:
                 next_turn = self.running = self.waiting
@@ -609,8 +657,28 @@ class Handler(BaseHTTPRequestHandler):
         if path in STATIC:
             filename, mime = STATIC[path]
             return self.send_data(200, (WEB / filename).read_bytes(), mime)
+        if path == "/api/chat-settings":
+            return self.send_json(200, self.server.chat_settings.public())
+        if path == "/api/access":
+            access = {"local_url": f"http://127.0.0.1:{self.server.server_port}/",
+                      "model_port": LOCAL_MODEL_PORT, "lan": None}
+            config = load_lan_config(LAN / "access.json", self.server.server_port)
+            if config is not None:
+                address, port, _ = gateway_address(config)
+                access["lan"] = {"url": f"https://{address}:{port}/", "port": port,
+                                 "ready": gateway_ready(config, LAN),
+                                 "certificate": (LAN / "localvoice-ca.cer").is_file()}
+            return self.send_json(200, access)
+        if path == "/localvoice-ca.cer":
+            try:
+                data = (LAN / "localvoice-ca.cer").read_bytes()
+            except OSError:
+                return self.send_json(404, {"error": "未找到局域网证书。"})
+            return self.send_data(200, data, "application/pkix-cert")
         if path == "/api/status":
-            return self.send_json(200, {"llama": llama_ready(), "tts_modes": self.server.tts_modes,
+            provider = self.server.chat_settings.provider
+            return self.send_json(200, {"llama": provider == "local" and llama_ready(),
+                                        "chat_provider": provider, "tts_modes": self.server.tts_modes,
                                         "quality_pcm": bool(self.server.graph),
                                         "quality_warming": self.server.graph_warming,
                                         "quality_voices": VOICE_PRESETS})
@@ -642,10 +710,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_data(200, audio, "audio/wav")
         self.send_json(404, {"error": "未找到。"})
 
+    def save_chat_settings(self):
+        if self.headers.get_content_type() != "application/json":
+            return self.send_json(415, {"error": "模型设置必须使用 JSON。"})
+        size = self.headers.get("Content-Length", "")
+        if not re.fullmatch(r"[0-9]{1,5}", size) or not 1 <= int(size) <= MAX_CHAT_SETTINGS:
+            return self.send_json(400, {"error": "模型设置为空或超过大小限制。"})
+        try:
+            raw = self.rfile.read(int(size))
+            if len(raw) != int(size):
+                raise ValueError
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError, RecursionError):
+            return self.send_json(400, {"error": "无法读取模型设置。"})
+        try:
+            settings = self.server.update_chat_settings(data)
+        except ValueError as error:
+            return self.send_json(400, {"error": str(error)})
+        except OSError:
+            return self.send_json(500, {"error": "无法保存模型设置。"})
+        self.send_json(200, settings.public())
+
     def do_POST(self):
         if not self.local_request(post=True):
             return self.send_json(403, {"error": "仅允许同源的本机访问。"})
         path = urlsplit(self.path).path
+        if path == "/api/chat-settings":
+            return self.save_chat_settings()
         cancel = re.fullmatch(r"/api/turn/([0-9a-f]{32})/cancel", path)
         if not cancel and path not in {"/api/turn", "/api/sample", "/api/warm-quality", "/api/voice-preview"}:
             return self.send_json(404, {"error": "未找到。"})
@@ -685,12 +776,29 @@ class Handler(BaseHTTPRequestHandler):
                 validate_clip(data)
             except (OSError, ValueError, wave.Error, EOFError) as error:
                 return self.send_json(400, {"error": str(error) if isinstance(error, ValueError) else "无法读取 WAV 音频。"})
-        if not preview and not llama_ready():
-            return self.send_json(503, {"error": "llama.cpp 未就绪，请先启动本地模型。"})
+        remote = None
+        if not preview:
+            settings = self.server.chat_settings
+            if self.headers.get("X-Voice-Chat-Provider", "local") != settings.provider:
+                return self.send_json(409, {"error": "回复模型已更改，请确认当前模型后重试。"})
+            if settings.provider == "remote":
+                remote = settings.remote
+            elif not llama_ready():
+                return self.send_json(503, {"error": "llama.cpp 未就绪，请先启动本地模型。"})
+        if path == "/api/sample":
+            try:
+                data = self.server.sample_audio.read_bytes()
+            except FileNotFoundError:
+                return self.send_json(503, {"error": "未找到本地样音，请先生成样音，或改用录音或上传音频。"})
+            except OSError as error:
+                self.log_error("Could not read sample audio: %s", error)
+                return self.send_json(500, {"error": "无法读取本地样音，请检查文件权限。"})
         try:
             turn_room = uuid.uuid4().hex if preview else conversation
-            token = self.server.create_turn(turn_room, data, tts_mode, speaker=speaker, preview=preview)
-        except OSError:
+            token = self.server.create_turn(turn_room, data, tts_mode, speaker=speaker,
+                                            preview=preview, remote=remote)
+        except OSError as error:
+            self.log_error("Could not save turn audio: %s", error)
             return self.send_json(500, {"error": "无法写入本地音频文件。"})
         if not token:
             return self.send_json(409, {"error": "已有一轮正在处理。"})
@@ -707,7 +815,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Local voice conversation page.")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=WEB_PORT)
     parser.add_argument("--cold-asr", action="store_true", help="Unload the recognizer between turns.")
     parser.add_argument("--cold-tts", action="store_true", help="Use one-shot Qwen speech synthesis.")
     parser.add_argument("--asr-device", choices=("cpu", "cuda"), default="cuda")
@@ -724,7 +832,9 @@ if __name__ == "__main__":
     fast_synthesizer = WarmModel("fasttts", idle_seconds=300) if fast_tts_available() else None
     try:
         with VoiceServer(("127.0.0.1", options.port), recognizer, synthesizer,
-                         fast_synthesizer, graph, options.asr_device) as server:
+                         fast_synthesizer, graph, options.asr_device,
+                         chat_settings_path=ROOT / "runtime" / "chat-settings.json",
+                         sample_audio=ASSET_ROOT / "checks" / SAMPLE_NAME) as server:
             if fast_synthesizer:
                 threading.Thread(target=server.warm_fast_tts, daemon=True).start()
             if recognizer and options.asr_device == "cpu":

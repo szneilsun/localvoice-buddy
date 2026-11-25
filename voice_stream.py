@@ -3,8 +3,9 @@ import json
 import re
 import socket
 import threading
+from urllib.parse import urlsplit
 
-from voice_smoke import chat_payload
+from voice_smoke import chat_messages, chat_payload
 
 
 SENTENCE_END = re.compile(r"[。！？!?；;\n]+[”’」』）\"]?|\.(?=\s)")
@@ -42,8 +43,9 @@ class Sentences:
             yield tail
 
 
-def deltas(lines):
+def deltas(lines, *, allow_finished_eof=False):
     data = []
+    finished = False
     for line in lines:
         line = line.rstrip(b"\r\n")
         if line.startswith(b"data:"):
@@ -55,17 +57,36 @@ def deltas(lines):
                 return
             chunk = json.loads(event)
             if chunk.get("error"):
-                raise RuntimeError(f"llama.cpp stream failed: {chunk['error']}")
+                raise RuntimeError("The chat service reported a streaming error.")
             choices = chunk.get("choices", [])
-            content = choices[0].get("delta", {}).get("content") if choices else None
+            if not choices:
+                continue
+            choice = choices[0]
+            if choice.get("finish_reason") in ("stop", "length", "content_filter", "tool_calls", "function_call"):
+                finished = True
+            content = choice.get("delta", {}).get("content")
             if isinstance(content, str) and content:
                 yield content
-    raise EOFError("llama.cpp closed the stream before [DONE].")
+    if allow_finished_eof and finished and not data:
+        return
+    raise EOFError("The chat service closed the stream before [DONE].")
 
 
-class LlamaStream:
-    def __init__(self, port=8001):
-        self.port = port
+class CompletionHTTPError(RuntimeError):
+    def __init__(self, status, content_type):
+        super().__init__(f"Chat service returned HTTP {status}.")
+        self.status = status
+        self.content_type = content_type
+
+
+class CompletionTimeout(TimeoutError):
+    def __init__(self, phase):
+        super().__init__(f"Chat service timed out during {phase}.")
+        self.phase = phase
+
+
+class CompletionStream:
+    def __init__(self):
         self.lock = threading.Lock()
         self.socket = None
         self.stopped = False
@@ -79,25 +100,64 @@ class LlamaStream:
                 except OSError:
                     pass
 
-    def generate(self, text, history, check):
-        payload = chat_payload(text, self.port, history, check=check)
+    def request(self, connection, path, payload, check, *, api_key=None):
         check()
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
+        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        if api_key is not None:
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["User-Agent"] = "LocalVoice/1.0"
+        phase = "connect"
         try:
+            with self.lock:
+                if self.stopped:
+                    return
             connection.connect()
             with self.lock:
                 if self.stopped:
                     return
                 # Keep the socket even if HTTPConnection detaches it for a closing response.
                 self.socket = connection.sock
-            connection.request("POST", "/v1/chat/completions",
-                               body=json.dumps(dict(payload, stream=True)).encode("utf-8"),
-                               headers={"Content-Type": "application/json", "Accept": "text/event-stream"})
+                if api_key is not None:
+                    self.socket.settimeout(60)
+            phase = "response"
+            connection.request("POST", path, body=json.dumps(dict(payload, stream=True)).encode("utf-8"),
+                               headers=headers)
             with connection.getresponse() as response:
+                content_type = response.headers.get_content_type()
                 if response.status != 200:
-                    raise RuntimeError(f"llama.cpp returned HTTP {response.status}.")
-                yield from deltas(response)
+                    raise CompletionHTTPError(response.status, content_type)
+                if api_key is not None and content_type != "text/event-stream":
+                    raise ValueError("The remote service did not return an SSE stream.")
+                phase = "stream"
+                yield from deltas(response, allow_finished_eof=api_key is not None)
+        except TimeoutError as error:
+            if api_key is None:
+                raise
+            raise CompletionTimeout(phase) from error
         finally:
             with self.lock:
                 self.socket = None
             connection.close()
+
+
+class LlamaStream(CompletionStream):
+    def __init__(self, port=8001):
+        super().__init__()
+        self.port = port
+
+    def generate(self, text, history, check):
+        payload = chat_payload(text, self.port, history, check=check)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
+        yield from self.request(connection, "/v1/chat/completions", payload, check)
+
+
+class OpenAIStream(CompletionStream):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    def generate(self, text, history, check):
+        url = urlsplit(self.config.endpoint)
+        payload = {"model": self.config.model, "messages": chat_messages(text, history)}
+        connection = http.client.HTTPSConnection(url.hostname, url.port, timeout=8)
+        yield from self.request(connection, url.path, payload, check, api_key=self.config.api_key)

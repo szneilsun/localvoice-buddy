@@ -8,6 +8,7 @@ node_modules/
 /downloads/
 /llama/
 /runtime/
+/VoiceBuddy.exe
 
 # Models and generated test data
 /models/

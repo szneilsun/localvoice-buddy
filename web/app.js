@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 const audio = $("audio");
 const device = $("device");
 const voiceToggle = $("voice-toggle");
+const chatDialog = $("chat-dialog");
 const canvas = $("waveform");
 const ctx = canvas.getContext("2d");
 const phases = ["asr", "chat", "tts"];
@@ -17,6 +18,10 @@ let holdingSpace = false;
 let livePlayback = null;
 let operation = null;
 let cancellation = Promise.resolve();
+let chatProvider = "local";
+let chatSettingsRevision = 0;
+let savedChatKey = false;
+let savingChatSettings = false;
 let ttsMode = sessionStorage.getItem("voice-tts-mode") === "quality" ? "quality" : "fast";
 let ttsSelectionAvailable = false;
 let ttsSpeaker = globalThis.localStorage?.getItem("voice-tts-speaker") || "Vivian";
@@ -40,7 +45,7 @@ function setMode(next) {
   $("record").dataset.active = active;
   $("record-icon").setAttribute("href", active ? "#i-stop" : "#i-mic");
   $("record-text").textContent = active ? "停止录音" : next === "permission" ? "等待麦克风" : "开始录音";
-  for (const id of ["device", "refresh", "upload", "sample", "new-chat"]) {
+  for (const id of ["device", "refresh", "upload", "sample", "new-chat", "chat-settings"]) {
     $(id).disabled = next !== "idle";
   }
   device.disabled ||= !!voiceSession;
@@ -62,6 +67,98 @@ function updateInterrupt() {
 function notice(message = "") {
   $("notice").textContent = message;
   $("notice").hidden = !message;
+}
+
+function showChatProvider(provider) {
+  chatProvider = provider === "remote" ? "remote" : "local";
+  $("processing-location").textContent = chatProvider === "remote" ? "文本发往远程"
+    : location.protocol === "https:" ? "由 Windows 主机处理" : "仅本机处理";
+}
+
+async function showAccessGuide() {
+  if (!$("access-guide").open) return;
+  const status = $("lan-status");
+  const link = $("lan-url");
+  const certificate = $("lan-certificate");
+  link.hidden = certificate.hidden = true;
+  status.textContent = "正在检查 HTTPS 入口";
+  try {
+    const access = await request("/api/access");
+    $("local-url").href = $("local-url").textContent = access.local_url;
+    $("local-model-port").textContent = access.model_port;
+    if (!access.lan) {
+      status.textContent = "HTTPS 入口尚未配置（默认端口 8443）";
+      return;
+    }
+    link.href = link.textContent = access.lan.url;
+    link.hidden = false;
+    certificate.hidden = !access.lan.certificate;
+    status.textContent = access.lan.ready ? " · HTTPS 已启动" : " · HTTPS 未启动";
+  } catch {
+    status.textContent = "无法读取局域网连接状态";
+  }
+}
+
+function showChatFields() {
+  const remote = $("chat-remote").checked;
+  $("chat-remote-fields").hidden = !remote;
+  $("chat-remote-fields").disabled = !remote;
+  $("chat-clear-row").hidden = remote || !savedChatKey;
+  $("chat-key").required = !savedChatKey;
+  $("chat-key").placeholder = savedChatKey ? "已保存，留空保留" : "";
+}
+
+async function openChatSettings() {
+  if (mode !== "idle" || chatDialog.open) return;
+  voiceSession?.engine?.suppress();
+  $("chat-message").textContent = "正在读取设置…";
+  $("chat-fields").disabled = true;
+  $("chat-key").value = "";
+  chatDialog.showModal();
+  try {
+    const settings = await request("/api/chat-settings");
+    if (!chatDialog.open) return;
+    savedChatKey = settings.has_api_key;
+    $("chat-local").checked = settings.provider === "local";
+    $("chat-remote").checked = settings.provider === "remote";
+    $("chat-url").value = settings.url;
+    $("chat-model").value = settings.model;
+    $("chat-clear").checked = false;
+    showChatFields();
+    $("chat-fields").disabled = false;
+    $("chat-message").textContent = "";
+  } catch {
+    $("chat-message").textContent = "无法读取模型设置，请关闭后重试。";
+  }
+}
+
+async function saveChatSettings(event) {
+  event.preventDefault();
+  if ($("chat-fields").disabled) return;
+  const remote = $("chat-remote").checked;
+  const settings = remote ? {
+    provider: "remote", url: $("chat-url").value.trim(), model: $("chat-model").value.trim(),
+    api_key: $("chat-key").value.trim(),
+  } : {provider: "local", clear_remote: !$("chat-clear-row").hidden && $("chat-clear").checked};
+  savingChatSettings = true;
+  $("chat-fields").disabled = $("chat-close").disabled = true;
+  $("chat-message").textContent = "正在保存…";
+  try {
+    const saved = await request("/api/chat-settings", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(settings),
+    });
+    chatSettingsRevision++;
+    showChatProvider(saved.provider);
+    $("connection").removeAttribute("data-online");
+    $("connection-text").textContent = "检查模型";
+    chatDialog.close();
+    void checkStatus();
+  } catch (error) {
+    $("chat-message").textContent = error.message || "无法保存模型设置。";
+  } finally {
+    savingChatSettings = false;
+    $("chat-fields").disabled = $("chat-close").disabled = false;
+  }
 }
 
 function updateVoiceControls() {
@@ -114,10 +211,15 @@ function keepQualityWarm() {
 }
 
 async function checkStatus() {
+  const revision = chatSettingsRevision;
   let online = false;
+  let reachable = false;
   try {
     const status = await request("/api/status");
-    online = status.llama;
+    if (revision !== chatSettingsRevision) return;
+    showChatProvider(status.chat_provider);
+    reachable = true;
+    online = chatProvider === "remote" || status.llama;
     qualityPcm = !!status.quality_pcm;
     qualityWarming = !!status.quality_warming;
     if (status.tts_modes?.length && !status.tts_modes.includes(ttsMode)) ttsMode = status.tts_modes[0];
@@ -130,9 +232,11 @@ async function checkStatus() {
   } catch {
     // The indicator also covers an unreachable coordinator.
   }
+  if (revision !== chatSettingsRevision) return;
   $("connection").dataset.online = online;
-  $("connection-text").textContent = online
-    ? (ttsMode === "quality" && qualityWarming ? "Qwen 预热中" : "模型在线") : "模型离线";
+  $("connection-text").textContent = !reachable ? "服务离线"
+    : (online && ttsMode === "quality" && qualityWarming) ? "Qwen 预热中"
+    : chatProvider === "remote" ? "远程已配置" : online ? "模型在线" : "模型离线";
   if (online) keepQualityWarm();
 }
 
@@ -294,7 +398,8 @@ async function startVoiceInput() {
         return true;
       },
       start() {
-        if (voiceSession !== current || (mode !== "idle" && !operation?.interruptible)) return false;
+        if (voiceSession !== current || chatDialog.open ||
+            (mode !== "idle" && !operation?.interruptible)) return false;
         interrupt(false);
         current.started = performance.now();
         setTimer(0);
@@ -739,7 +844,7 @@ async function submit(current, path, body, startedAt) {
   await cancellation;
   if (operation !== current) return;
   clearResult();
-  const headers = {};
+  const headers = {"X-Voice-Chat-Provider": current.chatProvider};
   if (body) headers["Content-Type"] = "audio/wav";
   if (current.ttsMode) headers["X-Voice-TTS"] = current.ttsMode;
   if (current.speaker) headers["X-Voice-Speaker"] = current.speaker;
@@ -775,11 +880,12 @@ async function submit(current, path, body, startedAt) {
 function processingFailed(error) {
   $("turn-status").textContent = "未完成";
   notice(error.name === "TimeoutError" ? "本机请求超时，请稍后重试。" : error.message || "处理失败。");
+  if (error.status === 409) void checkStatus();
 }
 
 async function runOperation(work, interruptible = true) {
   const current = {room: conversation, poll: new AbortController(), interruptible,
-    ttsMode: ttsSelectionAvailable ? ttsMode : null,
+    chatProvider, ttsMode: ttsSelectionAvailable ? ttsMode : null,
     speaker: ttsMode === "quality" && Object.hasOwn(qualityVoices, ttsSpeaker) ? ttsSpeaker : null};
   operation = current;
   livePlayback = null;
@@ -903,6 +1009,13 @@ function interrupt(moveFocus = true) {
 }
 
 $("interrupt").onclick = () => interrupt();
+$("chat-settings").onclick = openChatSettings;
+$("access-guide").ontoggle = showAccessGuide;
+$("chat-local").onchange = $("chat-remote").onchange = showChatFields;
+$("chat-form").onsubmit = saveChatSettings;
+$("chat-close").onclick = () => chatDialog.close();
+chatDialog.oncancel = (event) => { if (savingChatSettings) event.preventDefault(); };
+chatDialog.onclose = () => { $("chat-key").value = ""; };
 $("tts-speaker").onchange = () => {
   const value = $("tts-speaker").value;
   if (!Object.hasOwn(qualityVoices, value)) return;
@@ -971,6 +1084,7 @@ audio.onerror = () => {
 };
 navigator.mediaDevices?.addEventListener("devicechange", () => { void refreshDevices(); });
 window.addEventListener("keydown", (event) => {
+  if (chatDialog.open) return;
   if (event.key === "Escape" && !event.repeat && !event.isComposing && interrupt()) {
     event.preventDefault();
     return;
@@ -979,7 +1093,7 @@ window.addEventListener("keydown", (event) => {
   if (holdingSpace) { event.preventDefault(); return; }
   if (event.repeat || (mode !== "idle" && !operation?.interruptible)) return;
   if (event.target !== $("record") && event.target instanceof Element &&
-      event.target.closest("button, a, input, select, textarea, audio, [contenteditable]")) return;
+      event.target.closest("button, a, input, select, textarea, audio, summary, [contenteditable]")) return;
   event.preventDefault();
   if (operation?.interruptible) interrupt(false);
   holdingSpace = true;

@@ -7,6 +7,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from voice_smoke import ASSET_ROOT
+
 
 ROOT = Path(__file__).resolve().parent
 LLAMA_ADDRESS = ("127.0.0.1", 8001)
@@ -50,6 +52,7 @@ def run_step(python, command, *arguments):
             [str(python), str(Path(__file__).resolve()), "--worker", command, *map(str, arguments)],
             cwd=ROOT,
             env={**os.environ, "PYTHONUTF8": "1"},
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=True,
             timeout=240,
         )
@@ -67,7 +70,7 @@ def process_turn(audio, run, *, speaker="Vivian", asr_device="cuda", tts_device=
     reply = run / "reply.wav"
     on_stage("asr")
     if asr_runner is None:
-        run_step(ROOT / ".venv-asr/Scripts/python.exe", "asr",
+        run_step(ASSET_ROOT / ".venv-asr/Scripts/python.exe", "asr",
                  "--input", audio, "--output", transcript, "--device", asr_device)
     else:
         asr_runner(audio, transcript)
@@ -80,7 +83,7 @@ def process_turn(audio, run, *, speaker="Vivian", asr_device="cuda", tts_device=
     run_step(sys.executable, "chat", "--from-file", transcript, "--output", answer, *options)
     on_stage("tts")
     if tts_runner is None:
-        run_step(ROOT / ".venv-tts/Scripts/python.exe", "tts", "--from-file", answer,
+        run_step(ASSET_ROOT / ".venv-tts/Scripts/python.exe", "tts", "--from-file", answer,
                  "--output", reply, "--device", tts_device, "--speaker", speaker)
     else:
         tts_runner(answer, reply, speaker)

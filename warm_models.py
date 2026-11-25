@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from run_voice_turn import ROOT, guard_network
+from voice_smoke import ASSET_ROOT
 
 
 PREFIX = "MODEL_RESULT "
@@ -23,7 +24,7 @@ class ModelMemoryError(RuntimeError):
 class WarmModel:
     def __init__(self, kind, idle_seconds=None, *, python=None, asr_device="cuda"):
         self.kind = kind
-        self.python = python or ROOT / f".venv-{kind}/Scripts/python.exe"
+        self.python = python or ASSET_ROOT / f".venv-{kind}/Scripts/python.exe"
         self.asr_device = asr_device
         self.idle_seconds = idle_seconds
         self.worker = None
@@ -179,7 +180,7 @@ def worker_loop(kind, asr_device="cuda"):
     if kind == "fasttts":
         from fast_tts import PiperTTS
     elif kind == "qwen-graph":
-        sys.path.append(str(ROOT / ".venv-tts/Lib/site-packages"))
+        sys.path.append(str(ASSET_ROOT / ".venv-tts/Lib/site-packages"))
         os.environ.update(HF_HUB_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", TRANSFORMERS_OFFLINE="1")
     else:
         from voice_smoke import load_asr, load_tts, synthesize, transcribe
@@ -201,7 +202,7 @@ def worker_loop(kind, asr_device="cuda"):
                         from faster_qwen3_tts import FasterQwen3TTS
 
                         model = FasterQwen3TTS.from_pretrained(
-                            str(ROOT / "models/Qwen3-TTS-12Hz-0.6B-CustomVoice"),
+                            str(ASSET_ROOT / "models/Qwen3-TTS-12Hz-0.6B-CustomVoice"),
                             device="cuda:0", dtype=torch.bfloat16, attn_implementation="sdpa",
                             max_seq_len=1024, local_files_only=True,
                         )

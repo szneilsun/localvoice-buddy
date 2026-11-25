@@ -22,6 +22,8 @@
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M21 4h-7m-4 0H3m18 8H11m-4 0H3m18 8h-4m-4 0H3M14 2v4m-7 4v4m10 4v4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
   </svg>
   <header class="topbar">
     <div class="topbar-inner">
@@ -37,7 +39,8 @@
     <div class="page-title">
       <h1>语音对话</h1>
       <div class="page-actions">
-        <span class="private"><svg><use href="#i-lock"/></svg>仅本机处理</span>
+        <span class="private"><svg aria-hidden="true"><use href="#i-lock"/></svg><span id="processing-location">仅本机处理</span></span>
+        <button type="button" class="icon-button settings-button" id="chat-settings" title="回复模型设置" aria-label="回复模型设置" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-settings"/></svg></button>
         <button type="button" class="new-chat" id="new-chat"><svg><use href="#i-plus"/></svg>新对话</button>
       </div>
     </div>
@@ -90,7 +93,7 @@
         </div>
         <ol class="steps" aria-label="处理进度">
           <li data-phase="asr"><span>1</span>语音识别</li>
-          <li data-phase="chat"><span>2</span>本地问答</li>
+          <li data-phase="chat"><span>2</span>生成回复</li>
           <li data-phase="tts"><span>3</span>语音合成</li>
         </ol>
         <div class="result-text" aria-live="polite">
@@ -117,6 +120,60 @@
       <h2 id="history-title">对话记录</h2>
       <ol id="history" class="history-list"></ol>
     </section>
+    <details class="access-guide" id="access-guide">
+      <summary>使用说明与连接端口 <svg aria-hidden="true"><use href="#i-down"/></svg></summary>
+      <div class="access-content">
+        <dl class="access-ports">
+          <div><dt>Windows 本机</dt><dd><a id="local-url" href="http://127.0.0.1:8010/">http://127.0.0.1:8010/</a></dd></div>
+          <div><dt>Mac 局域网</dt><dd><a id="lan-url" hidden></a><span id="lan-status" role="status">正在检查 HTTPS 入口</span></dd></div>
+          <div><dt>本地回复模型</dt><dd><code id="local-model-port">8001</code> · 仅供 Windows 内部使用</dd></div>
+        </dl>
+        <section>
+          <h3>开始对话</h3>
+          <p>双击 Windows 桌面的「语音 Buddy」。打开页面后可先点「样音测试」，再允许麦克风并开始录音。</p>
+        </section>
+        <section>
+          <h3>从 Mac 连接</h3>
+          <ol>
+            <li>让 Mac 和 Windows 连到同一局域网，保持 Windows 和语音服务运行。</li>
+            <li>首次使用时，从 Windows 页面下载局域网公用 CA 证书，传到 Mac，在「钥匙串访问」中信任其 SSL 证书。<a id="lan-certificate" href="/localvoice-ca.cer" download hidden>下载局域网公用证书</a></li>
+            <li>在 Mac 打开上方 HTTPS 地址，用用户名 <code>voice</code> 和 Windows 的 <code>.voice-lan/access.json</code> 中的 <code>password</code> 登录，然后允许浏览器使用麦克风。</li>
+          </ol>
+          <p>连不上时，确认 Windows 防火墙允许专用网络访问 HTTPS 端口（默认 <code>8443</code>），不要在路由器上转发端口。</p>
+        </section>
+      </div>
+    </details>
   </main>
+  <dialog id="chat-dialog" class="chat-dialog" aria-labelledby="chat-settings-title">
+    <div class="dialog-heading">
+      <h2 id="chat-settings-title">回复模型</h2>
+      <button type="button" class="icon-button" id="chat-close" title="关闭" aria-label="关闭"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <form id="chat-form" autocomplete="off">
+      <fieldset id="chat-fields" class="chat-fields" disabled>
+        <fieldset class="segmented" aria-label="回复模型来源">
+          <label><input type="radio" name="chat-provider" id="chat-local" value="local" checked><span>本地</span></label>
+          <label><input type="radio" name="chat-provider" id="chat-remote" value="remote"><span>远程 OpenAI 兼容</span></label>
+        </fieldset>
+        <fieldset id="chat-remote-fields" class="chat-fields remote-fields" hidden disabled>
+          <label for="chat-url">API Base URL
+            <input id="chat-url" type="url" inputmode="url" placeholder="https://api.openai.com/v1" maxlength="2048" required>
+          </label>
+          <label for="chat-model">模型名称
+            <input id="chat-model" type="text" placeholder="gpt-4o-mini" maxlength="256" autocapitalize="off" spellcheck="false" required>
+          </label>
+          <label for="chat-key">API Key
+            <input id="chat-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
+          </label>
+          <p class="remote-disclosure">转写和对话上下文将发送给远程服务，录音仍在本机处理。</p>
+        </fieldset>
+        <div class="dialog-actions">
+          <label id="chat-clear-row" class="voice-toggle" hidden><input type="checkbox" id="chat-clear">清除远程配置</label>
+          <button type="submit" class="new-chat save-settings" id="chat-save"><svg aria-hidden="true"><use href="#i-check"/></svg>保存</button>
+        </div>
+      </fieldset>
+      <p class="settings-message" id="chat-message" role="status"></p>
+    </form>
+  </dialog>
 </body>
 </html>

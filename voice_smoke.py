@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+ASSET_ROOT = Path(os.environ.get("LOCALVOICE_ASSET_ROOT") or ROOT).resolve()
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 TTS_SAMPLE = (
     "\u4f60\u597d\uff0c\u6211\u662f\u672c\u5730\u8bed\u97f3\u52a9\u624b\u3002"
@@ -78,7 +79,7 @@ def run_record(args):
 
 
 def load_asr(device):
-    model_path = ROOT / "models" / "Qwen3-ASR-0.6B"
+    model_path = ASSET_ROOT / "models" / "Qwen3-ASR-0.6B"
     if not (model_path / "model.safetensors").is_file():
         raise ValueError(f"Model weights not found: {model_path}")
     options = local_model_options(device)
@@ -108,7 +109,7 @@ def run_asr(args):
 
 
 def load_tts(device):
-    model_path = ROOT / "models" / "Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    model_path = ASSET_ROOT / "models" / "Qwen3-TTS-12Hz-0.6B-CustomVoice"
     for subpath in ("model.safetensors", "speech_tokenizer/model.safetensors"):
         if not (model_path / subpath).is_file():
             raise ValueError(f"Model weights not found: {model_path / subpath}")
@@ -153,20 +154,24 @@ def llama_post(route, payload, port):
         return json.load(response)
 
 
-def chat_payload(text, port=8001, history=(), *, check=lambda: None):
+def chat_messages(text, history=()):
     system = {
         "role": "system",
         "content": ("Answer in concise Simplified Chinese suitable for speaking. Use plain text. "
                     "Start with a short, direct sentence, then add detail only as needed."),
     }
-    messages = [system, *history, {"role": "user", "content": text}]
+    if len(history) % 2 or any(
+        item.get("role") != ("user" if i % 2 == 0 else "assistant")
+        or not isinstance(item.get("content"), str)
+        for i, item in enumerate(history)
+    ):
+        raise ValueError("Conversation history must contain complete user and assistant pairs.")
+    return [system, *history, {"role": "user", "content": text}]
+
+
+def chat_payload(text, port=8001, history=(), *, check=lambda: None):
+    messages = chat_messages(text, history)
     if history:
-        if len(history) % 2 or any(
-            item.get("role") != ("user" if i % 2 == 0 else "assistant")
-            or not isinstance(item.get("content"), str)
-            for i, item in enumerate(history)
-        ):
-            raise ValueError("Conversation history must contain complete user and assistant pairs.")
         while True:
             check()
             prompt = llama_post("/apply-template", {"messages": messages}, port)["prompt"]

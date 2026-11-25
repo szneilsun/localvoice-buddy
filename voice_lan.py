@@ -15,26 +15,58 @@ from urllib.parse import urlsplit
 
 
 MAX_UPLOAD = 2 * 1024 * 1024
-REQUEST_HEADERS = ("Content-Type", "X-Conversation-Id", "X-Voice-TTS", "X-Voice-Speaker")
+REQUEST_HEADERS = ("Content-Type", "X-Conversation-Id", "X-Voice-TTS", "X-Voice-Speaker", "X-Voice-Chat-Provider")
 RESPONSE_HEADERS = (
     "Content-Type", "Cache-Control", "X-Content-Type-Options", "Permissions-Policy",
     "Cross-Origin-Resource-Policy", "Content-Security-Policy",
 )
+AUTH_REALM = 'Basic realm="LocalVoice"'
+
+
+def gateway_address(config):
+    network = ipaddress.IPv4Network(config["clientNetwork"])
+    address = ipaddress.IPv4Address(config["lanIp"])
+    port = int(config["port"])
+    if not 1024 <= port <= 65535 or address not in network or not any(
+        network.subnet_of(ipaddress.IPv4Network(candidate))
+        for candidate in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")
+    ):
+        raise ValueError("The gateway needs an IPv4 address and port in a private client network.")
+    return str(address), port, network
+
+
+def load_lan_config(path, backend_port):
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+        if int(config["backendPort"]) == backend_port:
+            gateway_address(config)
+            return config
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
+def gateway_ready(config, directory):
+    address, port, _ = gateway_address(config)
+    try:
+        trust = ssl.create_default_context(cafile=str(directory / "localvoice-ca.pem"))
+        connection = http.client.HTTPSConnection(address, port, timeout=1, context=trust)
+        try:
+            connection.request("GET", "/api/status")
+            with connection.getresponse() as response:
+                return response.status == 401 and response.getheader("WWW-Authenticate") == AUTH_REALM
+        finally:
+            connection.close()
+    except (OSError, http.client.HTTPException):
+        return False
 
 
 class Gateway(ThreadingHTTPServer):
     allow_reuse_address = False
 
     def __init__(self, config, directory):
-        self.client_network = ipaddress.IPv4Network(config["clientNetwork"])
+        listen, port, self.client_network = gateway_address(config)
         self.backend_port = int(config["backendPort"])
-        listen = str(ipaddress.IPv4Address(config["lanIp"]))
-        port = int(config["port"])
-        if ipaddress.IPv4Address(listen) not in self.client_network or not any(
-            self.client_network.subnet_of(ipaddress.IPv4Network(network))
-            for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")
-        ):
-            raise ValueError("The gateway needs an IPv4 address in a private client network.")
         self.host = f"{listen}:{port}"
         self.origin = f"https://{self.host}"
         password = config["password"]
@@ -80,7 +112,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         if challenge:
-            self.send_header("WWW-Authenticate", 'Basic realm="LocalVoice"')
+            self.send_header("WWW-Authenticate", AUTH_REALM)
         self.end_headers()
         self.wfile.write(body)
 

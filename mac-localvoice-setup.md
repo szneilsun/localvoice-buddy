@@ -6,7 +6,7 @@ Mac 只需要浏览器和麦克风。Windows 继续跑识别、问答和播报�
 
 ## Windows 一次性设置
 
-先启动 [Windows 推理和网页服务](README.md#3-启动并验证)。在仓库根目录下用 PowerShell 7.6 启动网关：
+先启动 [Windows 推理和网页服务](README.md#windows-一键启动)。尚未配置网关时，在仓库根目录下用 PowerShell 7.6 生成局域网证书和账号，并启动网关：
 
 ```powershell
 $python312 = py -3.12 -c "import sys; print(sys.executable)"
@@ -24,7 +24,7 @@ $python312 = py -3.12 -c "import sys; print(sys.executable)"
 
 ## Mac 一次性设置
 
-1. 通过可信方式把 Windows 的 `.voice-lan/localvoice-ca.cer` 公共证书传到 Mac。不要传 `server-key.pem`，也不要把 `.voice-lan` 整个目录共享。证书的 SHA-256 可在 Windows 用 `Get-FileHash` 核对，在 Mac 用 `shasum -a 256` 核对。
+1. 从 Windows 语音页面的「使用说明与连接端口」下载公用 CA 证书，或直接取 `.voice-lan/localvoice-ca.cer`，通过可信方式传到 Mac。不要传 `server-key.pem`，也不要把 `.voice-lan` 整个目录共享。证书的 SHA-256 可在 Windows 用 `Get-FileHash` 核对，在 Mac 用 `shasum -a 256` 核对。
 2. 打开「钥匙串访问」，将证书导入登录钥匙串。找到 `LocalVoice LAN CA`，展开「信任」，将「安全套接层（SSL）」设为始终信任；不要跳过 TLS 证书错误。也可以在 Mac 终端运行：
 
 ```bash
@@ -38,7 +38,7 @@ security add-trusted-cert -r trustRoot -p ssl \
 ## 运行和排查
 
 - 网关不会对局域网暴露 `8001` 或 `8010`。Windows 本机仍用 `http://127.0.0.1:8010/`。
-- Windows 必须保持开机，且问答服务、网页协调器和 HTTPS 网关均在运行。Windows 重启后，先启动推理和网页服务，再用相同参数启动网关。该脚本不会重启模型，也不会自动修改防火墙。
+- Windows 必须保持开机。完成一次性配置后，Windows 重启只需双击「语音 Buddy」；它会启动网页服务及已配置的 HTTPS 网关，不会自动修改防火墙。使用远程回复模型时，不需要另启 llama.cpp。
 - Mac 连不上时，先确认 Windows 网络设为「专用」、两台电脑在同一网段，并从 Mac 用 `nc -vz` 检查 Windows IPv4 的 `8443` 端口。连得上但证书报错时，核对地址、证书指纹和钥匙串信任。
 - 建议在路由器给 Windows 留固定的 DHCP 地址。IP 改变后，需要停止网关，用新的 `-LanIp` 和 `-ReissueCertificate` 启动，更新放行规则，并在 Mac 信任新证书。
 
