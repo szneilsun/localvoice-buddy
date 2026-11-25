@@ -29,13 +29,11 @@ def server_command(port, root=ROOT, asset_root=None):
 def service_ready(port):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
     try:
-        connection.request("GET", "/api/status")
+        connection.request("GET", "/api/health")
         with connection.getresponse() as response:
             if response.status != 200 or response.headers.get_content_type() != "application/json":
                 return False
-            status = json.loads(response.read(16384))
-            return (isinstance(status, dict) and status.get("chat_provider") in ("remote", "local")
-                    and "tts_modes" in status)
+            return json.loads(response.read(16384)) == {"service": "voice-buddy"}
     except (OSError, ValueError, http.client.HTTPException):
         return False
     finally:

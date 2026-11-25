@@ -21,7 +21,7 @@ Browser → voice_web.py → Qwen3-ASR (CPU)
 
 双击「语音 Buddy」桌面快捷方式或仓库目录的 `VoiceBuddy.exe`，它会在后台启动语音服务，并在默认浏览器打开 [语音页面](http://127.0.0.1:8010/)。已运行的服务会复用。Windows 的局域网入口完成一次性配置后，每次双击也会启动 HTTPS 网关；从页面底部「使用说明与连接端口」可以查看 Mac 地址和下载公用 CA 证书。远程模型设置会自动读取，关掉浏览器不会停止后台服务。
 
-若没有可执行文件，运行 `.\build-voicebuddy.ps1` 生成。首次打开时可选择已部署的 LocalVoice 模型目录，也可在构建时用 `-AssetRoot` 指定。安装了 `.venv-qwen-graph` 时，启动器会预热 CUDA Graph 并启用高音质流式播报；没有该环境时，复用普通 Qwen worker，避免每段都重新加载。启动失败时查看 `runtime/voice-buddy-8010.log`。切换本地回复模式时需另外启动 llama.cpp。
+若没有可执行文件，运行 `.\build-voicebuddy.ps1` 生成。首次打开时可选择已部署的 LocalVoice 模型目录，也可在构建时用 `-AssetRoot` 指定。安装了 `.venv-qwen-graph` 时，启动器会预热 CUDA Graph 并启用高音质流式播报；没有该环境时，复用普通 Qwen worker，避免每段都重新加载。启动失败时查看 `runtime/voice-buddy-8010.log`。打开网页不需要等待模型；使用本地回复时，需另外启动 llama.cpp（默认端口 `8001`），等页面显示「模型在线」再开始对话。
 
 ### 开始对话
 

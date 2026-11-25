@@ -597,10 +597,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "microphone=(self)")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; media-src 'self' blob:")
-        self.end_headers()
         try:
+            self.end_headers()
             self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        except (ConnectionError, socket.timeout):
             pass
 
     def send_json(self, status, value):
@@ -654,6 +654,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(403, {"error": "仅允许同源的本机访问。"})
         url = urlsplit(self.path)
         path = url.path
+        if path == "/api/health":
+            # Startup must not depend on model availability or warmup.
+            return self.send_json(200, {"service": "voice-buddy"})
         if path in STATIC:
             filename, mime = STATIC[path]
             return self.send_data(200, (WEB / filename).read_bytes(), mime)
